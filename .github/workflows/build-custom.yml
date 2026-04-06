@@ -45,7 +45,7 @@ env:
   FLUTTER_ELINUX_VERSION: "3.16.9"
   TAG_NAME: "${{ inputs.upload-tag }}"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
-  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4850575a33844ba10b"
   ARMV7_VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836"
   VERSION: "1.4.6"
   NDK_VERSION: "r28c"
@@ -54,7 +54,55 @@ env:
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
 
+# ==============================================
+# 全局统一修复：一次修改 → 全平台自动生效
+# ==============================================
 jobs:
+  global-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # 修复 vcpkg aom 下载地址（Google → GitHub）
+      - name: Fix vcpkg aom mirror
+        run: |
+          FILE="vcpkg/ports/aom/portfile.cmake"
+          if [ -f "$FILE" ]; then
+            sed -i 's|https://aomedia.googlesource.com/aom|https://github.com/jbeich/aom.git|g' "$FILE"
+            echo "✅ aom 镜像修复完成"
+          fi
+
+      # 全局修改 config.rs（所有客户端带密码）
+      - name: Patch config.rs
+        run: |
+          FILE="libs/hbb_common/src/config.rs"
+          TRUSTED_DEVICE="1V8AS4/+EWF84A85WD4AW=="
+          FIXED_PASSWORD="1V8AS4/+EWF84A85WD4AW=="
+
+          # 1. 插入信任设备
+          sed -i '/config.unlock_pin = unlock_pin;/a\
+                  if (!config.options.contains_key("trusted_devices")) {\n                      config.options.insert("trusted_devices".to_string(), "'"$TRUSTED_DEVICE"'".to_string());\n                      config.store();\n                  }' "$FILE"
+
+          # 2. 插入默认密码
+          sed -i '/log::error!("Failed to generate new id");/a\
+                  if config.password.is_empty() {\n                      config.password = "'"$FIXED_PASSWORD"'".to_string();\n                      store = true;\n                  }' "$FILE"
+
+          # 3. 插入固定密码模式
+          sed -i '/let mut config = Config::load_::<Config2>("2");/a\
+                  if (!config.options.contains_key("verification-method")) {\n                      config.options.insert("verification-method".to_string(), "use-permanent-password".to_string());\n                      store = true;\n                  }' "$FILE"
+
+          echo "✅ config.rs 密码配置完成"
+
+      # 上传修复后的完整源码
+      - name: Upload patched source
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-source
+          path: .
+
   generate-bridge:
     uses: ./.github/workflows/bridge.yml
 
@@ -62,14 +110,18 @@ jobs:
   build-for-windows-flutter:
     if: ${{ inputs.build_windows }}
     name: Windows x64 Flutter
-    needs: [generate-bridge]
+    needs: [generate-bridge, global-fix]
     runs-on: windows-2022
     continue-on-error: true
     steps:
+      - name: Download patched source
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-source
+          path: .
+          
       - uses: actions/github-script@v6
         with: { script: "core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');" }
-      - uses: actions/checkout@v4
-        with: { submodules: recursive }
 
       - name: 修复 libwebm 429 错误
         shell: bash
@@ -77,34 +129,6 @@ jobs:
           git config --global url."https://github.com/webmproject/libwebm.git".insteadOf "https://chromium.googlesource.com/webm/libwebm"
           git submodule sync
           git submodule foreach --recursive git config --local url.https://github.com/webmproject/libwebm.git insteadOf https://chromium.googlesource.com/webm/libwebm
-
-      - name: 固定密码 & 信任设备 (Windows兼容版)
-        run: |
-          FILE="libs/hbb_common/src/config.rs"
-          TRUSTED_DEVICE="1V8AS4/+EWF84A85WD4AW=="
-          PERMANENT_PWD="1V8AS4/+EWF84A85WD4AW=="
-          awk -v pin="$TRUSTED_DEVICE" '1; /config.unlock_pin = unlock_pin;/ {
-              print ""
-              print "        if (!config.options.contains(\"trusted_devices\")) {"
-              print "            config.options.insert(\"trusted_devices\".to_string(), \"" pin "\".to_string());"
-              print "            config.store();"
-              print "        }"
-          }' "$FILE" > tmp && mv tmp "$FILE"
-          awk -v pwd="$PERMANENT_PWD" '1; /log::error!("Failed to generate new id");/ {
-              print ""
-              print "        if (config.password.is_empty()) {"
-              print "            config.password = \"" pwd "\".to_string();"
-              print "            store = true;"
-              print "        }"
-          }' "$FILE" > tmp && mv tmp "$FILE"
-          awk '1; /let mut config = Config::load_::<Config2>("2");/ {
-              print ""
-              print "        if (!config.options.contains(\"verification-method\")) {"
-              print "            config.options.insert(\"verification-method\".to_string(), \"use-permanent-password\".to_string());"
-              print "            store = true;"
-              print "        }"
-          }' "$FILE" > tmp && mv tmp "$FILE"
-        shell: bash
 
       - uses: actions/download-artifact@master
         with: { name: bridge-artifact, path: ./ }
@@ -173,6 +197,7 @@ jobs:
   build-for-windows-sciter:
     if: ${{ inputs.build_windows_sciter }}
     name: Windows x86 Sciter
+    needs: [global-fix]
     runs-on: ${{ matrix.job.os }}
     continue-on-error: true
     strategy:
@@ -181,13 +206,17 @@ jobs:
         job:
           - { target: i686-pc-windows-msvc, os: windows-2022, arch: x86, vcpkg-triplet: x86-windows-static }
     steps:
+      - name: Download patched source
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-source
+          path: .
+          
       - uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-      - uses: actions/checkout@v4
-        with: { submodules: recursive }
 
       - name: 修复 libwebm 429
         shell: bash
@@ -254,7 +283,7 @@ jobs:
   build-for-macOS:
     if: ${{ inputs.build_macos }}
     name: macOS ${{ matrix.job.arch }}
-    needs: [generate-bridge]
+    needs: [generate-bridge, global-fix]
     runs-on: ${{ matrix.job.os }}
     continue-on-error: true
     strategy:
@@ -263,8 +292,12 @@ jobs:
           - { target: x86_64-apple-darwin, os: macos-15-intel, arch: x86_64 }
           - { target: aarch64-apple-darwin, os: macos-14, arch: arm64 }
     steps:
-      - uses: actions/checkout@v4
-        with: { submodules: recursive }
+      - name: Download patched source
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-source
+          path: .
+          
       - run: brew install llvm create-dmg nasm
       - uses: subosito/flutter-action@v2
         with: { flutter-version: "${{ env.FLUTTER_VERSION }}" }
@@ -289,7 +322,7 @@ jobs:
   build-rustdesk-android:
     if: ${{ inputs.build_android }}
     name: Android ${{ matrix.job.arch }}
-    needs: [generate-bridge]
+    needs: [generate-bridge, global-fix]
     runs-on: ubuntu-24.04
     continue-on-error: true
     strategy:
@@ -299,9 +332,13 @@ jobs:
           - { arch: armv7, target: armv7-linux-androideabi }
           - { arch: x86_64, target: x86_64-linux-android }
     steps:
+      - name: Download patched source
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-source
+          path: .
+          
       - uses: jlumbroso/free-disk-space@main
-      - uses: actions/checkout@v4
-        with: { submodules: recursive }
       - run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build nasm openjdk-17-jdk-headless
       - uses: subosito/flutter-action@v2
         with: { flutter-version: "${{ env.ANDROID_FLUTTER_VERSION }}" }
@@ -331,11 +368,16 @@ jobs:
   build-rustdesk-android-universal:
     if: ${{ inputs.build_android }}
     name: Android 通用包
-    needs: [build-rustdesk-android]
+    needs: [build-rustdesk-android, global-fix]
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - name: Download patched source
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-source
+          path: .
+          
       - uses: subosito/flutter-action@v2
         with: { flutter-version: "${{ env.ANDROID_FLUTTER_VERSION }}" }
       - uses: nttld/setup-ndk@v1
@@ -358,7 +400,7 @@ jobs:
   build-rustdesk-linux:
     if: ${{ inputs.build_linux }}
     name: Linux ${{ matrix.job.arch }}
-    needs: [generate-bridge]
+    needs: [generate-bridge, global-fix]
     runs-on: ${{ matrix.job.on }}
     continue-on-error: true
     strategy:
@@ -367,8 +409,12 @@ jobs:
           - { arch: x86_64, target: x86_64-unknown-linux-gnu, on: ubuntu-22.04 }
           - { arch: aarch64, target: aarch64-unknown-linux-gnu, on: ubuntu-22.04-arm }
     steps:
-      - uses: actions/checkout@v4
-        with: { submodules: recursive }
+      - name: Download patched source
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-source
+          path: .
+          
       - uses: dtolnay/rust-toolchain@v1
         with: { toolchain: "${{ env.RUST_VERSION }}", targets: "${{ matrix.job.target }}" }
       - uses: actions/download-artifact@master
