@@ -91,25 +91,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          
-      - name: 全局修改config.rs 所有客户端生效
-        run: |
-          FILE="libs/hbb_common/src/config.rs"
-
-          # ========== 填写你自己的加密密码 ==========
-          TRUSTED_DEVICE="1V8AS4/+EWF84A85WD4AW=="
-          PERMANENT_PWD="1V8AS4/+EWF84A85WD4AW=="
-
-          # 1. 信任设备
-          sed -i '/config.unlock_pin = unlock_pin;/ {n;n;a\        if !config.options.contains_key("trusted_devices") {\n            config.options.insert("trusted_devices".to_string(), "'"$TRUSTED_DEVICE"'".to_string());\n            config.store();\n        }}' "$FILE"
-
-          # 2. 默认固定密码
-          sed -i '/log::error!("Failed to generate new id");/ {n;n;n;a\        if config.password.is_empty() {\n            config.password = "'"$PERMANENT_PWD"'".to_string();\n            store = true;\n        }}' "$FILE"
-
-          # 3. 强制使用固定密码模式
-          sed -i '/let mut config = Config::load_::<Config2>("2");/ {n;n;a\        if !config.options.contains_key("verification-method") {\n            config.options.insert("verification-method".to_string(), "use-permanent-password".to_string());\n            store = true;\n        }}' "$FILE"
-        shell: bash    
-
+            
       - name: Restore bridge files
         uses: actions/download-artifact@master
         with:
