@@ -37,7 +37,9 @@ on:
 # 以下完全是你提供的官方原版工作流，一字未改
 # NOTE: F-Droid builder script 'flutter/build_fdroid.sh' reads environment
 # variables from this workflow!
-#
+permissions:
+  contents: write
+  actions: read
 # It does NOT read build steps, however, so please fix 'flutter/build_fdroid.sh
 # whenever you add changes to Android CI build action ('build-rustdesk-android')
 # in this file!
@@ -71,8 +73,35 @@ env:
   MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
-
+  
 jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate platform tag
+        id: gentag
+        run: |
+          TAG="auto-build-$(date +%Y%m%d-%H%M%S)"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Create tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'refs/tags/${{ steps.gentag.outputs.tag }}',
+              sha: context.sha
+            });
+
+    # ↓ 输出标签给所有平台使用
+    outputs:
+      tag: ${{ steps.gentag.outputs.tag }}
+      
   generate-bridge:
     uses: ./.github/workflows/bridge.yml
 
@@ -89,7 +118,7 @@ jobs:
 
   build-for-windows-flutter:
     name: ${{ matrix.job.target }}
-    needs: [build-RustDeskTempTopMostWindow, generate-bridge]
+    needs: [build-RustDeskTempTopMostWindow,create-tag,generate-bridge]
     runs-on: ${{ matrix.job.os }}
     if: ${{ inputs.build_windows }}
     strategy:
