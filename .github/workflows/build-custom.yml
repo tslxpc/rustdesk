@@ -134,11 +134,12 @@ jobs:
           mv ./Package/bin/x64/Release/en-us/Package.msi ../../SignOutput/rustdesk-${{ env.VERSION }}-x64.msi
 
       - name: 上传发布
-        uses: softprops/gh-release@v1
+        uses: ncipollo/release-action@v1
         with:
           prerelease: true
-          tag_name: "${{ env.TAG_NAME }}"
-          files: ./SignOutput/rustdesk-*
+          tag: "${{ env.TAG_NAME }}"
+          artifacts: ./SignOutput/rustdesk-*
+          token: ${{ secrets.GITHUB_TOKEN }}
 
 # ========================= macOS =========================
   build-for-macOS:
@@ -167,11 +168,13 @@ jobs:
       - run: ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }}
       - name: 打包 DMG
         run: create-dmg --icon "RustDesk.app" 200 190 --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
-      - uses: softprops/gh-release@v1
+      - name: 上传发布
+        uses: ncipollo/release-action@v1
         with:
           prerelease: true
-          tag_name: "${{ env.TAG_NAME }}"
-          files: rustdesk-*.dmg
+          tag: "${{ env.TAG_NAME }}"
+          artifacts: rustdesk-*.dmg
+          token: ${{ secrets.GITHUB_TOKEN }}
 
 # ========================= Android =========================
   build-rustdesk-android:
@@ -208,11 +211,13 @@ jobs:
           pushd flutter
           flutter build apk --release --target-platform android-${{ matrix.job.arch == 'armv7' && 'arm' || matrix.job.arch }} --split-per-abi
           mv build/app/outputs/flutter-apk/app-*.apk ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
-      - uses: softprops/gh-release@v1
+      - name: 上传发布
+        uses: ncipollo/release-action@v1
         with:
           prerelease: true
-          tag_name: "${{ env.TAG_NAME }}"
-          files: rustdesk-*.apk
+          tag: "${{ env.TAG_NAME }}"
+          artifacts: rustdesk-*.apk
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   build-rustdesk-android-universal:
     if: ${{ inputs.build_android }}
@@ -232,11 +237,13 @@ jobs:
           pushd flutter
           flutter build apk --release --target-platform android-arm64,android-arm,android-x64
           mv build/app/outputs/flutter-apk/app-release.apk ../rustdesk-${{ env.VERSION }}-universal.apk
-      - uses: softprops/gh-release@v1
+      - name: 上传发布
+        uses: ncipollo/release-action@v1
         with:
           prerelease: true
-          tag_name: "${{ env.TAG_NAME }}"
-          files: rustdesk-*.apk
+          tag: "${{ env.TAG_NAME }}"
+          artifacts: rustdesk-*.apk
+          token: ${{ secrets.GITHUB_TOKEN }}
 
 # ========================= Linux =========================
   build-rustdesk-linux:
@@ -268,8 +275,10 @@ jobs:
             export VCPKG_ROOT=/opt/artifacts/vcpkg
             cargo build --lib --features hwcodec,flutter --release
             python3 ./build.py --flutter --skip-cargo
-      - uses: softprops/gh-release@v1
+      - name: 上传发布
+        uses: ncipollo/release-action@v1
         with:
           prerelease: true
-          tag_name: "${{ env.TAG_NAME }}"
-          files: rustdesk-*.deb
+          tag: "${{ env.TAG_NAME }}"
+          artifacts: rustdesk-*.deb
+          token: ${{ secrets.GITHUB_TOKEN }}
