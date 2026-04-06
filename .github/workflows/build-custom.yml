@@ -53,9 +53,10 @@ env:
   MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
-  # ✅ 全局强制 aom 使用 GitHub 镜像（永不报错 128）
+  # 👇 核心修复：全局强制 aom 走 GitHub 镜像（不删 aom、不报 128）
   GIT_CONFIG_GLOBAL: |
     [url "https://github.com/jbeich/aom.git"]insteadOf=https://aomedia.googlesource.com/aom
+    [url "https://github.com/webmproject/libwebm.git"]insteadOf=https://chromium.googlesource.com/webm/libwebm
 
 jobs:
   generate-bridge:
@@ -69,6 +70,11 @@ jobs:
     runs-on: windows-2022
     continue-on-error: true
     steps:
+      - name: 安装 Git
+        run: choco install git --params "/InstallDir:C:\git" --no-progress
+      - name: 添加 Git 到 PATH
+        run: echo "C:\git\bin" >> $env:GITHUB_PATH
+
       - uses: actions/github-script@v6
         with: { script: "core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');" }
       - uses: actions/checkout@v4
@@ -96,9 +102,9 @@ jobs:
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgDirectory: "C:\\vcpkg", vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
 
-      - name: 安装 vcpkg 依赖
+      - name: 安装 vcpkg 依赖（含 aom）
         shell: bash
-        run: $VCPKG_ROOT/vcpkg install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+        run: $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
 
       - name: 编译 RustDesk
         run: |
@@ -149,6 +155,11 @@ jobs:
         job:
           - { target: i686-pc-windows-msvc, os: windows-2022, arch: x86, vcpkg-triplet: x86-windows-static }
     steps:
+      - name: 安装 Git
+        run: choco install git --params "/InstallDir:C:\git" --no-progress
+      - name: 添加 Git 到 PATH
+        run: echo "C:\git\bin" >> $env:GITHUB_PATH
+
       - uses: actions/github-script@v6
         with:
           script: |
@@ -173,10 +184,10 @@ jobs:
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgDirectory: C:\vcpkg, vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
 
-      - name: Install vcpkg dependencies
+      - name: Install vcpkg dependencies（含 aom）
         shell: bash
         run: |
-          $VCPKG_ROOT/vcpkg install --triplet ${{ matrix.job.vcpkg-triplet }} --x-install-root="$VCPKG_ROOT/installed"
+          $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom --triplet ${{ matrix.job.vcpkg-triplet }} --x-install-root="$VCPKG_ROOT/installed"
 
       - name: Build rustdesk
         shell: bash
@@ -235,7 +246,7 @@ jobs:
         with: { name: bridge-artifact, path: ./ }
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
-      - run: $VCPKG_ROOT/vcpkg install
+      - run: $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom
       - run: ./build.py --flutter --hwcodec --unix-file-copy-paste
       - name: 打包 DMG
         run: create-dmg rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
@@ -344,6 +355,8 @@ jobs:
           dockerRunArgs: "--volume ${PWD}:/workspace --volume /opt/artifacts:/opt/artifacts"
           run: |
             export VCPKG_ROOT=/opt/artifacts/vcpkg
+            # 安装 aom 等依赖
+            vcpkg install libvpx libyuv opus aom
             cargo build --lib --features hwcodec,flutter --release
             python3 ./build.py --flutter --skip-cargo
       - uses: ncipollo/release-action@v1
