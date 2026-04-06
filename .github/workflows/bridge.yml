@@ -29,6 +29,15 @@ jobs:
         with:
           submodules: recursive
 
+      # ====================== 🔥 修复 chromium 429 错误 ======================
+      - name: Fix libwebm submodule 429 rate limit
+        shell: bash
+        run: |
+          git config --global url."https://github.com/webmproject/libwebm.git".insteadOf "https://chromium.googlesource.com/webm/libwebm"
+          git submodule sync
+          git submodule foreach --recursive git config --local url.https://github.com/webmproject/libwebm.git insteadOf https://chromium.googlesource.com/webm/libwebm
+      # ======================================================================
+
       - name: Install prerequisites
         run: |
           sudo apt-get install ca-certificates -y
