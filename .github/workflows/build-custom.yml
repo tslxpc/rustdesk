@@ -76,25 +76,25 @@ jobs:
           fi
 
       # 全局修改 config.rs（所有客户端带密码）
-      - name: Patch config.rs
-        run: |
-          FILE="libs/hbb_common/src/config.rs"
-          TRUSTED_DEVICE="1V8AS4/+EWF84A85WD4AW=="
-          FIXED_PASSWORD="1V8AS4/+EWF84A85WD4AW=="
+      #- name: Patch config.rs
+      #  run: |
+       #   FILE="libs/hbb_common/src/config.rs"
+        #  TRUSTED_DEVICE="1V8AS4/+EWF84A85WD4AW=="
+         # FIXED_PASSWORD="1V8AS4/+EWF84A85WD4AW=="
 
           # 1. 插入信任设备
-          sed -i '/config.unlock_pin = unlock_pin;/a\
-                  if (!config.options.contains_key("trusted_devices")) {\n                      config.options.insert("trusted_devices".to_string(), "'"$TRUSTED_DEVICE"'".to_string());\n                      config.store();\n                  }' "$FILE"
+          #sed -i '/config.unlock_pin = unlock_pin;/a\
+           #       if (!config.options.contains_key("trusted_devices")) {\n                      config.options.insert("trusted_devices".to_string(), "'"$TRUSTED_DEVICE"'".to_string());\n                      config.store();\n                  }' "$FILE"
 
           # 2. 插入默认密码
-          sed -i '/log::error!("Failed to generate new id");/a\
-                  if config.password.is_empty() {\n                      config.password = "'"$FIXED_PASSWORD"'".to_string();\n                      store = true;\n                  }' "$FILE"
+          #sed -i '/log::error!("Failed to generate new id");/a\
+           #       if config.password.is_empty() {\n                      config.password = "'"$FIXED_PASSWORD"'".to_string();\n                      store = true;\n                  }' "$FILE"
 
           # 3. 插入固定密码模式
-          sed -i '/let mut config = Config::load_::<Config2>("2");/a\
-                  if (!config.options.contains_key("verification-method")) {\n                      config.options.insert("verification-method".to_string(), "use-permanent-password".to_string());\n                      store = true;\n                  }' "$FILE"
+          #sed -i '/let mut config = Config::load_::<Config2>("2");/a\
+           #       if (!config.options.contains_key("verification-method")) {\n                      config.options.insert("verification-method".to_string(), "use-permanent-password".to_string());\n                      store = true;\n                  }' "$FILE"
 
-          echo "✅ config.rs 密码配置完成"
+          #echo "✅ config.rs 密码配置完成"
 
       # 上传修复后的完整源码
       - name: Upload patched source
