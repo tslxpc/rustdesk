@@ -53,10 +53,6 @@ env:
   MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
-  # 👇 核心修复：全局强制 aom 走 GitHub 镜像（不删 aom、不报 128）
-  GIT_CONFIG_GLOBAL: |
-    [url "https://github.com/jbeich/aom.git"]insteadOf=https://aomedia.googlesource.com/aom
-    [url "https://github.com/webmproject/libwebm.git"]insteadOf=https://chromium.googlesource.com/webm/libwebm
 
 jobs:
   generate-bridge:
@@ -70,13 +66,14 @@ jobs:
     runs-on: windows-2022
     continue-on-error: true
     steps:
-      - name: 安装 Git
-        run: choco install git --params "/InstallDir:C:\git" --no-progress
-      - name: 添加 Git 到 PATH
-        run: echo "C:\git\bin" >> $env:GITHUB_PATH
-
       - uses: actions/github-script@v6
         with: { script: "core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');" }
+      
+      - name: 配置 Git 镜像（修复 aom 拉取失败）
+        run: |
+          git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
+          git config --global url."https://github.com/webmproject/libwebm.git".insteadOf https://chromium.googlesource.com/webm/libwebm
+      
       - uses: actions/checkout@v4
         with: { submodules: recursive }
 
@@ -84,7 +81,7 @@ jobs:
         with: { name: bridge-artifact, path: ./ }
       - uses: KyleMayes/install-llvm-action@v1
         with: { version: "${{ env.LLVM_VERSION }}" }
-      - uses: subosito/flutter-action@v2.12.0
+      - uses: subosito/flutter-action@v2
         with: { channel: "stable", flutter-version: "${{ env.FLUTTER_VERSION }}" }
 
       - name: 替换 Flutter 引擎
@@ -102,69 +99,59 @@ jobs:
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgDirectory: "C:\\vcpkg", vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
 
-      - name: 安装 vcpkg 依赖（含 aom）
+      - name: 安装依赖（含 aom）
         shell: bash
-        run: $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+        run: $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom --triplet x64-windows-static
 
       - name: 编译 RustDesk
         run: |
           python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
-          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
-          Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
-          Expand-Archive usbmmidd_v2.zip -DestinationPath .
-          Remove-Item -Path usbmmidd_v2\Win32 -Recurse
-          mv -Force .\usbmmidd_v2 ./rustdesk
 
       - name: 打包 exe
         shell: bash
         run: |
           sed -i '/dpiAware/d' res/manifest.xml
           pushd ./libs/portable
-          pip3 install -r requirements.txt
-          python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
+          python3 ./generate.py -f ../../flutter/build/windows/x64/runner/Release -o . -e ../../rustdesk.exe
           popd
-          mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-x64.exe
 
       - uses: microsoft/setup-msbuild@v2
       - name: 编译 MSI
         run: |
           pushd ./res/msi
-          python preprocess.py --arp -d ../../rustdesk
           nuget restore msi.sln
-          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
-          mv ./Package/bin/x64/Release/en-us/Package.msi ../../SignOutput/rustdesk-${{ env.VERSION }}-x64.msi
+          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 -p:TargetVersion=Windows10
 
       - name: 上传发布
         uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
-          artifacts: ./SignOutput/rustdesk-*
+          artifacts: |
+            flutter/build/windows/x64/runner/Release/*.exe
+            res/msi/bin/x64/Release/*.msi
           token: ${{ secrets.GITHUB_TOKEN }}
 
 # ========================= Windows Sciter 32位 旧版 =========================
   build-for-windows-sciter:
     if: ${{ inputs.build_windows_sciter }}
     name: Windows x86 Sciter
-    runs-on: ${{ matrix.job.os }}
+    runs-on: windows-2022
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
         job:
-          - { target: i686-pc-windows-msvc, os: windows-2022, arch: x86, vcpkg-triplet: x86-windows-static }
+          - { target: i686-pc-windows-msvc, arch: x86, triplet: x86-windows-static }
     steps:
-      - name: 安装 Git
-        run: choco install git --params "/InstallDir:C:\git" --no-progress
-      - name: 添加 Git 到 PATH
-        run: echo "C:\git\bin" >> $env:GITHUB_PATH
-
       - uses: actions/github-script@v6
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+        with: { script: "core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');" }
+      
+      - name: 配置 Git 镜像
+        run: |
+          git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
+          git config --global url."https://github.com/webmproject/libwebm.git".insteadOf https://chromium.googlesource.com/webm/libwebm
+      
       - uses: actions/checkout@v4
         with: { submodules: recursive }
 
@@ -172,54 +159,40 @@ jobs:
         uses: rustdesk-org/install-llvm-action-32bit@master
         with: { version: "${{ env.LLVM_VERSION }}" }
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: nightly-2023-10-13-${{ matrix.job.target }}
-          targets: "${{ matrix.job.target }}"
-          components: "rustfmt"
-
+      - uses: dtolnay/rust-toolchain@v1
+        with: { toolchain: nightly-2023-10-13-${{ matrix.job.target }}, targets: "${{ matrix.job.target }}" }
       - uses: Swatinem/rust-cache@v2
-        with: { prefix-key: "${{ matrix.job.os }}-sciter" }
+        with: { prefix-key: "win32" }
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgDirectory: C:\vcpkg, vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
 
-      - name: Install vcpkg dependencies（含 aom）
+      - name: 安装依赖（含 aom）
         shell: bash
-        run: |
-          $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom --triplet ${{ matrix.job.vcpkg-triplet }} --x-install-root="$VCPKG_ROOT/installed"
+        run: $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom --triplet ${{ matrix.job.triplet }}
 
-      - name: Build rustdesk
+      - name: 编译
         shell: bash
         run: |
           python3 res/inline-sciter.py
-          sed -i 's/branch = "dyn"/branch = "dyn_x86"/g' ./Cargo.toml
-          cargo build --features inline,vram,hwcodec --release --bins
-          mkdir -p ./Release
-          mv ./target/release/rustdesk.exe ./Release/rustdesk.exe
-          curl -LJ -o ./Release/sciter.dll https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x32/sciter.dll
-          curl -LJ -o ./usbmmidd_v2.zip https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip
-          unzip usbmmidd_v2.zip
-          rm -rf ./usbmmidd_v2/deviceinstaller.exe ./usbmmidd_v2/usbmmidd.bat
-          mv ./usbmmidd_v2 ./Release || true
+          cargo build --features inline,vram,hwcodec --release --target ${{ matrix.job.target }}
 
-      - name: 打包单文件
+      - name: 打包
         shell: bash
         run: |
+          mkdir -p Release
+          cp target/${{ matrix.job.target }}/release/rustdesk.exe Release/
+          curl -LJo Release/sciter.dll https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x32/sciter.dll
           sed -i '/dpiAware/d' res/manifest.xml
-          pushd ./libs/portable
-          pip3 install -r requirements.txt
-          python3 ./generate.py -f ../../Release/ -o . -e ../../Release/rustdesk.exe
+          pushd libs/portable
+          python3 generate.py -f ../../Release -o . -e ../../rustdesk.exe
           popd
-          mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-x86-sciter.exe
 
       - name: 上传
         uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
-          artifacts: ./SignOutput/*.exe
+          artifacts: "Release/*.exe,rustdesk.exe"
           token: ${{ secrets.GITHUB_TOKEN }}
 
 # ========================= macOS =========================
@@ -228,140 +201,114 @@ jobs:
     name: macOS ${{ matrix.job.arch }}
     needs: [generate-bridge]
     runs-on: ${{ matrix.job.os }}
-    continue-on-error: true
     strategy:
       matrix:
         job:
-          - { target: x86_64-apple-darwin, os: macos-15-intel, arch: x86_64 }
-          - { target: aarch64-apple-darwin, os: macos-14, arch: arm64 }
+          - { os: macos-15-intel, arch: x86_64 }
+          - { os: macos-14, arch: arm64 }
     steps:
+      - name: 配置镜像
+        run: |
+          git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
+      
       - uses: actions/checkout@v4
         with: { submodules: recursive }
+      
       - run: brew install llvm create-dmg nasm
-      - uses: subosito/flutter-action@v2
-        with: { flutter-version: "${{ env.FLUTTER_VERSION }}" }
       - uses: dtolnay/rust-toolchain@v1
-        with: { toolchain: "${{ env.MAC_RUST_VERSION }}", targets: "${{ matrix.job.target }}" }
+        with: { toolchain: "${{ env.MAC_RUST_VERSION }}" }
       - uses: actions/download-artifact@master
-        with: { name: bridge-artifact, path: ./ }
+        with: { name: bridge-artifact }
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
-      - run: $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom
+      
+      - run: vcpkg install libvpx libyuv opus aom
       - run: ./build.py --flutter --hwcodec --unix-file-copy-paste
+      
       - name: 打包 DMG
-        run: create-dmg rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
+        run: create-dmg rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg flutter/build/macos/Build/Products/Release/RustDesk.app
+      
       - uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
-          artifacts: rustdesk-*.dmg
+          artifacts: "*.dmg"
           token: ${{ secrets.GITHUB_TOKEN }}
 
 # ========================= Android =========================
   build-rustdesk-android:
     if: ${{ inputs.build_android }}
-    name: Android ${{ matrix.job.arch }}
     needs: [generate-bridge]
     runs-on: ubuntu-24.04
-    continue-on-error: true
     strategy:
       matrix:
-        job:
-          - { arch: aarch64, target: aarch64-linux-android }
-          - { arch: armv7, target: armv7-linux-androideabi }
-          - { arch: x86_64, target: x86_64-linux-android }
+        arch: [arm64-v8a, armeabi-v7a, x86_64]
     steps:
-      - uses: jlumbroso/free-disk-space@main
+      - name: 配置镜像
+        run: |
+          git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
+      
       - uses: actions/checkout@v4
         with: { submodules: recursive }
-      - run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build nasm openjdk-17-jdk-headless
-      - uses: subosito/flutter-action@v2
-        with: { flutter-version: "${{ env.ANDROID_FLUTTER_VERSION }}" }
+      
+      - run: sudo apt install -y clang cmake ninja-build nasm openjdk-17-jdk-headless
+      - uses: actions/download-artifact@master
+        with: { name: bridge-artifact }
       - uses: nttld/setup-ndk@v1
         with: { ndk-version: "${{ env.NDK_VERSION }}" }
       - uses: dtolnay/rust-toolchain@v1
         with: { toolchain: "${{ env.RUST_VERSION }}" }
-      - uses: actions/download-artifact@master
-        with: { name: bridge-artifact, path: ./ }
+      
       - name: 编译
         run: |
-          rustup target add ${{ matrix.job.target }}
-          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }}
-          ./flutter/ndk_arm64.sh || ./flutter/ndk_arm.sh || ./flutter/ndk_x64.sh
-      - name: 编译 APK
-        run: |
-          pushd flutter
-          flutter build apk --release --split-per-abi
-          mv build/app/outputs/flutter-apk/app-*.apk ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          ./flutter/build_android.sh ${{ matrix.arch }}
+      
       - uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
-          artifacts: rustdesk-*.apk
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-  build-rustdesk-android-universal:
-    if: ${{ inputs.build_android }}
-    name: Android 通用包
-    needs: [build-rustdesk-android]
-    runs-on: ubuntu-24.04
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with: { flutter-version: "${{ env.ANDROID_FLUTTER_VERSION }}" }
-      - uses: nttld/setup-ndk@v1
-        with: { ndk-version: "${{ env.NDK_VERSION }}" }
-      - uses: actions/download-artifact@master
-        with: { name: bridge-artifact, path: ./ }
-      - name: 合并架构
-        run: |
-          pushd flutter
-          flutter build apk --release
-          mv build/app/outputs/flutter-apk/app-release.apk ../rustdesk-${{ env.VERSION }}-universal.apk
-      - uses: ncipollo/release-action@v1
-        with:
-          prerelease: true
-          tag: "${{ env.TAG_NAME }}"
-          artifacts: rustdesk-*.apk
+          artifacts: "flutter/build/app/outputs/flutter-apk/*.apk"
           token: ${{ secrets.GITHUB_TOKEN }}
 
 # ========================= Linux =========================
   build-rustdesk-linux:
     if: ${{ inputs.build_linux }}
-    name: Linux ${{ matrix.job.arch }}
     needs: [generate-bridge]
     runs-on: ${{ matrix.job.on }}
-    continue-on-error: true
     strategy:
       matrix:
         job:
-          - { arch: x86_64, target: x86_64-unknown-linux-gnu, on: ubuntu-22.04 }
-          - { arch: aarch64, target: aarch64-unknown-linux-gnu, on: ubuntu-22.04-arm }
+          - { arch: x86_64, on: ubuntu-22.04 }
+          - { arch: aarch64, on: ubuntu-22.04-arm }
     steps:
+      - name: 配置镜像
+        run: |
+          git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
+      
       - uses: actions/checkout@v4
         with: { submodules: recursive }
+      
       - uses: dtolnay/rust-toolchain@v1
-        with: { toolchain: "${{ env.RUST_VERSION }}", targets: "${{ matrix.job.target }}" }
+        with: { toolchain: "${{ env.RUST_VERSION }}" }
       - uses: actions/download-artifact@master
-        with: { name: bridge-artifact, path: ./ }
+        with: { name: bridge-artifact }
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgDirectory: "/opt/artifacts/vcpkg", vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
+      
       - name: 编译
         uses: rustdesk-org/run-on-arch-action@amd64-support
         with:
           arch: ${{ matrix.job.arch }}
           distro: ubuntu18.04
-          dockerRunArgs: "--volume ${PWD}:/workspace --volume /opt/artifacts:/opt/artifacts"
           run: |
-            export VCPKG_ROOT=/opt/artifacts/vcpkg
-            # 安装 aom 等依赖
             vcpkg install libvpx libyuv opus aom
             cargo build --lib --features hwcodec,flutter --release
-            python3 ./build.py --flutter --skip-cargo
+            ./build.py --flutter --skip-cargo
+      
       - uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
-          artifacts: rustdesk-*.deb
+          artifacts: "rustdesk-*.deb"
           token: ${{ secrets.GITHUB_TOKEN }}
