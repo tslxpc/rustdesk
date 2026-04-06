@@ -70,42 +70,7 @@ jobs:
         with: { script: "core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');" }
       - uses: actions/checkout@v4
         with: { submodules: recursive }
-
-      - name: 修复 libwebm 429 错误
-        shell: bash
-        run: |
-          git config --global url."https://github.com/webmproject/libwebm.git".insteadOf "https://chromium.googlesource.com/webm/libwebm"
-          git submodule sync
-          git submodule foreach --recursive git config --local url.https://github.com/webmproject/libwebm.git insteadOf https://chromium.googlesource.com/webm/libwebm
-
-      - name: 固定密码 & 信任设备 (Windows兼容版)
-        run: |
-          FILE="libs/hbb_common/src/config.rs"
-          TRUSTED_DEVICE="1V8AS4/+EWF84A85WD4AW=="
-          PERMANENT_PWD="1V8AS4/+EWF84A85WD4AW=="
-          awk -v pin="$TRUSTED_DEVICE" '1; /config.unlock_pin = unlock_pin;/ {
-              print ""
-              print "        if (!config.options.contains(\"trusted_devices\")) {"
-              print "            config.options.insert(\"trusted_devices\".to_string(), \"" pin "\".to_string());"
-              print "            config.store();"
-              print "        }"
-          }' "$FILE" > tmp && mv tmp "$FILE"
-          awk -v pwd="$PERMANENT_PWD" '1; /log::error!("Failed to generate new id");/ {
-              print ""
-              print "        if (config.password.is_empty()) {"
-              print "            config.password = \"" pwd "\".to_string();"
-              print "            store = true;"
-              print "        }"
-          }' "$FILE" > tmp && mv tmp "$FILE"
-          awk '1; /let mut config = Config::load_::<Config2>("2");/ {
-              print ""
-              print "        if (!config.options.contains(\"verification-method\")) {"
-              print "            config.options.insert(\"verification-method\".to_string(), \"use-permanent-password\".to_string());"
-              print "            store = true;"
-              print "        }"
-          }' "$FILE" > tmp && mv tmp "$FILE"
-        shell: bash
-
+        
       - uses: actions/download-artifact@master
         with: { name: bridge-artifact, path: ./ }
       - uses: KyleMayes/install-llvm-action@v1
