@@ -69,7 +69,7 @@ jobs:
       - uses: actions/github-script@v6
         with: { script: "core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');" }
       
-      - name: 配置 Git 镜像（修复 aom 拉取失败）
+      - name: 配置 Git 镜像
         run: |
           git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
           git config --global url."https://github.com/webmproject/libwebm.git".insteadOf https://chromium.googlesource.com/webm/libwebm
@@ -93,27 +93,18 @@ jobs:
           mv -Force windows-x64-release/* C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
 
       - uses: dtolnay/rust-toolchain@v1
-        with: { toolchain: "${{ env.SCITER_RUST_VERSION }}", targets: "x86_64-pc-windows-msvc", components: "rustfmt" }
+        with: { toolchain: "${{ env.SCITER_RUST_VERSION }}", targets: "x86_64-pc-windows-msvc" }
       - uses: Swatinem/rust-cache@v2
         with: { prefix-key: "windows-2022" }
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgDirectory: "C:\\vcpkg", vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
 
-      - name: 安装依赖（含 aom）
+      - name: 安装依赖
         shell: bash
         run: $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom --triplet x64-windows-static
 
       - name: 编译 RustDesk
-        run: |
-          python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
-
-      - name: 打包 exe
-        shell: bash
-        run: |
-          sed -i '/dpiAware/d' res/manifest.xml
-          pushd ./libs/portable
-          python3 ./generate.py -f ../../flutter/build/windows/x64/runner/Release -o . -e ../../rustdesk.exe
-          popd
+        run: python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
 
       - uses: microsoft/setup-msbuild@v2
       - name: 编译 MSI
@@ -122,14 +113,12 @@ jobs:
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 -p:TargetVersion=Windows10
 
-      - name: 上传发布
+      - name: 上传
         uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
-          artifacts: |
-            flutter/build/windows/x64/runner/Release/*.exe
-            res/msi/bin/x64/Release/*.msi
+          artifacts: "flutter/build/windows/x64/runner/Release/*.exe,res/msi/bin/x64/Release/*.msi"
           token: ${{ secrets.GITHUB_TOKEN }}
 
 # ========================= Windows Sciter 32位 旧版 =========================
@@ -166,7 +155,7 @@ jobs:
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgDirectory: C:\vcpkg, vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
 
-      - name: 安装依赖（含 aom）
+      - name: 安装依赖
         shell: bash
         run: $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom --triplet ${{ matrix.job.triplet }}
 
@@ -176,44 +165,25 @@ jobs:
           python3 res/inline-sciter.py
           cargo build --features inline,vram,hwcodec --release --target ${{ matrix.job.target }}
 
-      - name: 打包
-        shell: bash
-        run: |
-          mkdir -p Release
-          cp target/${{ matrix.job.target }}/release/rustdesk.exe Release/
-          curl -LJo Release/sciter.dll https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x32/sciter.dll
-          sed -i '/dpiAware/d' res/manifest.xml
-          pushd libs/portable
-          python3 generate.py -f ../../Release -o . -e ../../rustdesk.exe
-          popd
-
       - name: 上传
         uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
-          artifacts: "Release/*.exe,rustdesk.exe"
+          artifacts: "target/${{ matrix.job.target }}/release/rustdesk.exe"
           token: ${{ secrets.GITHUB_TOKEN }}
 
 # ========================= macOS =========================
   build-for-macOS:
     if: ${{ inputs.build_macos }}
-    name: macOS ${{ matrix.job.arch }}
+    name: macOS
     needs: [generate-bridge]
-    runs-on: ${{ matrix.job.os }}
-    strategy:
-      matrix:
-        job:
-          - { os: macos-15-intel, arch: x86_64 }
-          - { os: macos-14, arch: arm64 }
+    runs-on: macos-15-intel
     steps:
       - name: 配置镜像
-        run: |
-          git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
-      
+        run: git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
       - uses: actions/checkout@v4
         with: { submodules: recursive }
-      
       - run: brew install llvm create-dmg nasm
       - uses: dtolnay/rust-toolchain@v1
         with: { toolchain: "${{ env.MAC_RUST_VERSION }}" }
@@ -221,18 +191,15 @@ jobs:
         with: { name: bridge-artifact }
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
-      
       - run: vcpkg install libvpx libyuv opus aom
       - run: ./build.py --flutter --hwcodec --unix-file-copy-paste
-      
       - name: 打包 DMG
-        run: create-dmg rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg flutter/build/macos/Build/Products/Release/RustDesk.app
-      
+        run: create-dmg rustdesk.dmg flutter/build/macos/Build/Products/Release/RustDesk.app
       - uses: ncipollo/release-action@v1
         with:
           prerelease: true
           tag: "${{ env.TAG_NAME }}"
-          artifacts: "*.dmg"
+          artifacts: "rustdesk.dmg"
           token: ${{ secrets.GITHUB_TOKEN }}
 
 # ========================= Android =========================
@@ -240,17 +207,11 @@ jobs:
     if: ${{ inputs.build_android }}
     needs: [generate-bridge]
     runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        arch: [arm64-v8a, armeabi-v7a, x86_64]
     steps:
       - name: 配置镜像
-        run: |
-          git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
-      
+        run: git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
       - uses: actions/checkout@v4
         with: { submodules: recursive }
-      
       - run: sudo apt install -y clang cmake ninja-build nasm openjdk-17-jdk-headless
       - uses: actions/download-artifact@master
         with: { name: bridge-artifact }
@@ -258,12 +219,9 @@ jobs:
         with: { ndk-version: "${{ env.NDK_VERSION }}" }
       - uses: dtolnay/rust-toolchain@v1
         with: { toolchain: "${{ env.RUST_VERSION }}" }
-      
-      - name: 编译
-        run: |
+      - run: |
           rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
-          ./flutter/build_android.sh ${{ matrix.arch }}
-      
+          ./flutter/build_android.sh
       - uses: ncipollo/release-action@v1
         with:
           prerelease: true
@@ -275,37 +233,23 @@ jobs:
   build-rustdesk-linux:
     if: ${{ inputs.build_linux }}
     needs: [generate-bridge]
-    runs-on: ${{ matrix.job.on }}
-    strategy:
-      matrix:
-        job:
-          - { arch: x86_64, on: ubuntu-22.04 }
-          - { arch: aarch64, on: ubuntu-22.04-arm }
+    runs-on: ubuntu-22.04
     steps:
       - name: 配置镜像
-        run: |
-          git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
-      
+        run: git config --global url."https://github.com/jbeich/aom.git".insteadOf https://aomedia.googlesource.com/aom
       - uses: actions/checkout@v4
         with: { submodules: recursive }
-      
       - uses: dtolnay/rust-toolchain@v1
         with: { toolchain: "${{ env.RUST_VERSION }}" }
       - uses: actions/download-artifact@master
         with: { name: bridge-artifact }
       - uses: lukka/run-vcpkg@v11
         with: { vcpkgDirectory: "/opt/artifacts/vcpkg", vcpkgGitCommitId: "${{ env.VCPKG_COMMIT_ID }}" }
-      
       - name: 编译
-        uses: rustdesk-org/run-on-arch-action@amd64-support
-        with:
-          arch: ${{ matrix.job.arch }}
-          distro: ubuntu18.04
-          run: |
-            vcpkg install libvpx libyuv opus aom
-            cargo build --lib --features hwcodec,flutter --release
-            ./build.py --flutter --skip-cargo
-      
+        run: |
+          vcpkg install libvpx libyuv opus aom
+          cargo build --lib --features hwcodec,flutter --release
+          ./build.py --flutter --skip-cargo
       - uses: ncipollo/release-action@v1
         with:
           prerelease: true
