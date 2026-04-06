@@ -123,13 +123,6 @@ jobs:
       - uses: actions/github-script@v6
         with: { script: "core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || ''); core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');" }
 
-      - name: 修复 libwebm 429 错误
-        shell: bash
-        run: |
-          git config --global url."https://github.com/webmproject/libwebm.git".insteadOf "https://chromium.googlesource.com/webm/libwebm"
-          git submodule sync
-          git submodule foreach --recursive git config --local url.https://github.com/webmproject/libwebm.git insteadOf https://chromium.googlesource.com/webm/libwebm
-
       - uses: actions/download-artifact@master
         with: { name: bridge-artifact, path: ./ }
       - uses: KyleMayes/install-llvm-action@v1
